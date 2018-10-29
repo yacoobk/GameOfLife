@@ -7,7 +7,5 @@ logs/
 SpatialOS/schema/bin/
 OtherWorkers/Interactive/client/bin/
 OtherWorkers/Interactive/client/src/improbable/
-HelloWorker/bin/
-HelloWorker/src/improbable/
-OtherWorkers/DiceWorker/bin/
-OtherWorkers/DiceWorker/src/improbable/
+LifeWorker/bin/
+LifeWorker/src/improbable/

@@ -1,12 +1,11 @@
 {
   "configurationVersion": "0.1",
-  "projectName": "your_project_name_here",
+  "projectName": "beta_hamper_nebraska_601",
   "schemaDescriptor": "./schema/bin/schema.descriptor",
   "clientWorkers": [
     "../OtherWorkers/Interactive/client/improbable/client_worker.json"
   ],
   "serverWorkers": [
-    "../HelloWorker/hello_worker.json",
-    "../OtherWorkers/DiceWorker/worker_config.json"
+    "../LifeWorker/life_worker.json"
   ]
 }

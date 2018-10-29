@@ -1,7 +1,7 @@
 {
   "dimensionsInWorldUnits": {
-    "x": 1000,
-    "z": 1000
+    "x": 100,
+    "z": 100
   },
   "loadBalancing": {},
   "snapshot": {
