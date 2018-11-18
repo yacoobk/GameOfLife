@@ -9,3 +9,5 @@ OtherWorkers/Interactive/client/bin/
 OtherWorkers/Interactive/client/src/improbable/
 LifeWorker/bin/
 LifeWorker/src/improbable/
+SnapshotGenerator/bin/
+SnapshotGenerator/src/improbable/
