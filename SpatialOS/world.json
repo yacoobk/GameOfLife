@@ -3,7 +3,16 @@
     "x": 100,
     "z": 100
   },
-  "loadBalancing": {},
+  "loadBalancing": {
+    "layerConfigurations": [
+      {
+        "layer": "lifeSimulation",
+        "hexGrid": {
+          "numWorkers": 1
+        }
+      }
+    ]
+  },
   "snapshot": {
     "takeSnapshotIntervalSeconds": "600",
     "startDeploymentFromSnapshotFile": "../shared/default.snapshot"

@@ -1,10 +1,6 @@
 {
   "workerType": "LifeWorker",
-  "attributeSet": {
-    "attributes": [
-      "lifeSimulation"
-    ]
-  },
+  "layer": "lifeSimulation",
   "entity_interest": {
     "range_entity_interest": {
       "radius": 2
