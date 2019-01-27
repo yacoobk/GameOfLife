@@ -4,4 +4,5 @@ package cell;
 component CellState {
   id = 200;
   bool is_alive = 1; // true if the cell is alive, otherwise false
+  list<EntityId> neighbours = 2;
 }

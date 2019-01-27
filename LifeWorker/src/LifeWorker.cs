@@ -36,17 +36,17 @@ namespace Cell
             Console.WriteLine("Worker Starting...");
             using (var connection = ConnectWorker(arguments))
             {
-                using (var view = new View())
+                using (var dispatcher = new Dispatcher())
                 {
                     var isConnected = true;
 
-                    view.OnDisconnect(op =>
+                    dispatcher.OnDisconnect(op =>
                     {
                         Console.Error.WriteLine("[disconnect] {0}", op.Reason);
                         isConnected = false;
                     });
 
-                    view.OnLogMessage(op =>
+                    dispatcher.OnLogMessage(op =>
                     {
                         connection.SendLogMessage(op.Level, LoggerName, op.Message);
                         Console.WriteLine("Log Message: {0}", op.Message);
@@ -60,23 +60,34 @@ namespace Cell
                     connection.SendLogMessage(LogLevel.Info, LoggerName,
                         "Successfully connected using TCP and the Receptionist");
                     
+                    //
+                    // Simulation Logic
+                    //
                     var maxWait = System.TimeSpan.FromMilliseconds(1000f / FramesPerSecond);
                     var stopwatch = new System.Diagnostics.Stopwatch();
+                    var cells = new Dictionary<Improbable.EntityId, CellState.Data>();
+                    var cellsAuthoritative = new HashSet<Improbable.EntityId>();
                     var isViewComplete = false;
                     var isSeeded = false;
 
-                    // yolo - we know the gridSize, and there's only 1 worker...
-                    var cellPositions = new Improbable.EntityId[gridSize,gridSize];
-                    view.OnAddComponent<Improbable.Position>(op => 
+                    // parse cells in to a useful data structure
+                    dispatcher.OnAddComponent<Cell.CellState>(op => 
                     {
-                        var coords = op.Data.Get().Value.coords;
-                        // yolo - we know the coords will be integer values
-                        var x = (int)coords.x;
-                        var z = (int)coords.z;
-                        cellPositions[x,z] = op.EntityId;
+                        //cells.Add(op.EntityId, op.Data.Get().Value);
+                        cells.Add(op.EntityId, op.Data.Get());
                     });
-                    var cellsAuthoritative = new HashSet<Improbable.EntityId>();
-                    view.OnAuthorityChange<Cell.CellState>(op =>
+
+                    // TODO: only strictly care about this for cells we are not authoritative over
+                    // for ones we are authoritative over, we should maintain our own state
+                    dispatcher.OnComponentUpdate<Cell.CellState>(op =>
+                    {
+                        var cellId = op.EntityId;
+                        var newCellData = cells[op.EntityId];
+                        op.Update.ApplyTo(newCellData);
+                        cells[op.EntityId] = newCellData;
+                    });
+
+                    dispatcher.OnAuthorityChange<Cell.CellState>(op =>
                     {
                         switch(op.Authority){
                             case Improbable.Worker.Authority.Authoritative:
@@ -88,6 +99,7 @@ namespace Cell
                         }
                     });
 
+                    // simulate the world
                     var tick = 0;
                     while (isConnected)
                     {
@@ -96,34 +108,29 @@ namespace Cell
                         // Invoke callbacks.
                         using (var opList = connection.GetOpList(GetOpListTimeoutInMilliseconds))
                         {
-                            view.Process(opList);
+                            dispatcher.Process(opList);
                         }
                         // Do other work here...
 
-                        //connection.SendLogMessage(LogLevel.Info, LoggerName, "entity count"+view.Entities.Count);
+                        connection.SendLogMessage(LogLevel.Info, LoggerName, $"entity count {cells.Count}");
 
                         // Check if the view is complete
                         // yolo - I know there are only gridSize*gridSize entities in the snapshot, and only 1 worker
-                        if (!isViewComplete && view.Entities.Count == gridSize*gridSize)
+                        if (!isViewComplete && cells.Count == (int)Math.Pow(gridSize,2) && cellsAuthoritative.Count == cells.Count)
                         {
+                            connection.SendLogMessage(LogLevel.Info, LoggerName, "view completed");
                             isViewComplete = true;
                         }
 
                         // Seed the game
                         if (isViewComplete && !isSeeded)
                         {
-                            //var update = new Cell.CellState.Update();
+                            connection.SendLogMessage(LogLevel.Info, LoggerName, "seeding...");
                             var update = new Cell.CellState.Update();
                             update.isAlive = true;
-                            // connection.SendComponentUpdate(new EntityId(1), update);
-                            // connection.SendComponentUpdate(new EntityId(2), update);
-                            // connection.SendComponentUpdate(new EntityId(3), update);
-                            connection.SendComponentUpdate(new EntityId(11), update);
                             connection.SendComponentUpdate(new EntityId(12), update);
                             connection.SendComponentUpdate(new EntityId(13), update);
-                            // connection.SendComponentUpdate(new EntityId(21), update);
-                            // connection.SendComponentUpdate(new EntityId(22), update);
-                            // connection.SendComponentUpdate(new EntityId(23), update);
+                            connection.SendComponentUpdate(new EntityId(14), update);
                             isSeeded = true;
                         }
 
@@ -138,48 +145,46 @@ namespace Cell
                         {
                             tick++;
                             connection.SendLogMessage(LogLevel.Info, LoggerName, $"** Tick {tick} **");
-                            foreach(var c in cellsAuthoritative)
+                            foreach(var cellId in cellsAuthoritative)
                             {
-                                var coords = view.Entities[c].Get<Position>().Value.Get().Value.coords;
-                                var x = (int)coords.x;
-                                var z = (int)coords.z;
-                                var isAlive = view.Entities[c].Get<CellState>().Value.Get().Value.isAlive;
-                                var neighbours = new List<Improbable.EntityId>();
-                                var liveNeighbours = 0;
-                                var maxIndex = gridSize - 1;
-
-                                // find neighbours
-                                if (x > 0) {neighbours.Add(cellPositions[x - 1, z]);} // left
-                                if (x > 0 && z < maxIndex) {neighbours.Add(cellPositions[x - 1, z + 1]);} // left, up
-                                if (x > 0 && z > 0) {neighbours.Add(cellPositions[x - 1, z - 1]);} // left, down
-                                if (z < maxIndex) {neighbours.Add(cellPositions[x , z + 1]);} // up
-                                if (z > 0) {neighbours.Add(cellPositions[x, z - 1]);} // down
-                                if (x < maxIndex) {neighbours.Add(cellPositions[x + 1, z]);} // right
-                                if (x < maxIndex && z < maxIndex) {neighbours.Add(cellPositions[x + 1, z + 1]);} // right, up
-                                if (x < maxIndex && z > 0) {neighbours.Add(cellPositions[x + 1, z - 1]);} // right, down
-
-                                // count how many are alive
-                                foreach (var n in neighbours)
+                                CellState.Data cellData;
+                                var foundCell = cells.TryGetValue(cellId, out cellData);
+                                if (!foundCell)
                                 {
-                                    if (view.Entities[n].Get<CellState>().Value.Get().Value.isAlive) { liveNeighbours++; }
+                                    connection.SendLogMessage(LogLevel.Error, LoggerName, $"Could not find cell {cellId.Id}");
+                                    break;
+                                }
+
+                                // count how many neighbours are alive
+                                var liveNeighbours = 0;
+                                foreach (var neighbourId in cellData.Value.neighbours)
+                                {
+                                    CellState.Data neighbourCellData;
+                                    var foundNeighbour = cells.TryGetValue(neighbourId, out neighbourCellData);
+                                    if (!foundNeighbour)
+                                    {
+                                        connection.SendLogMessage(LogLevel.Error, LoggerName, $"Could not find cell {cellId.Id}'s neighbour {neighbourId.Id}");
+                                        break;
+                                    }
+                                    if (neighbourCellData.Value.isAlive) { liveNeighbours++; }
                                 }
 
                                 // if state needs to change then send an update
-                                //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {x},{z} {isAlive}. live neighbours: {liveNeighbours}");
+                                // connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {cellId.Id} {cellData.isAlive}. live neighbours: {liveNeighbours}");
                                 var update = new Cell.CellState.Update();
-                                if (isAlive && (liveNeighbours < 2 || liveNeighbours > 3))
+                                if (cellData.Value.isAlive && (liveNeighbours < 2 || liveNeighbours > 3))
                                 {
-                                    //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {x},{z} {isAlive}. live neighbours: {liveNeighbours}. Killing...");
+                                    // connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {cellId.Id} {cellData.isAlive}. live neighbours: {liveNeighbours}. Killing...");
                                     //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Killing...");
                                     update.isAlive = false;
-                                    connection.SendComponentUpdate(c, update);
+                                    connection.SendComponentUpdate(cellId, update);
                                 }
-                                if (!isAlive && liveNeighbours == 3)
+                                if (!cellData.Value.isAlive && liveNeighbours == 3)
                                 {
-                                    //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {x},{z} {isAlive}. live neighbours: {liveNeighbours}. Spawning...");
+                                    // connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {cellId.Id} {cellData.isAlive}. live neighbours: {liveNeighbours}. Spawning...");
                                     //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Spawning...");
                                     update.isAlive = true;
-                                    connection.SendComponentUpdate(c, update);
+                                    connection.SendComponentUpdate(cellId, update);
                                 }
                             }
                         }

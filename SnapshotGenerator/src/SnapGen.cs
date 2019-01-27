@@ -12,6 +12,7 @@ namespace Life
     class SnapGen
     {
         private const int ErrorExitStatus = 1;
+        private const int gridSize = 10;
 
         static int Main(string[] arguments)
         {
@@ -38,8 +39,6 @@ namespace Life
 
         private static void GenerateSnapshot(string snapshotPath)
         {
-            const int gridSize = 10;
-
             Console.WriteLine(String.Format("Generating snapshot file {0}", snapshotPath));
             Assembly.Load("GeneratedCode");
             using (var snapshotOutput = new SnapshotOutputStream(snapshotPath))
@@ -50,8 +49,9 @@ namespace Life
                 {
                     for (var j = 0; j < gridSize; j++)
                     {
-                        var entityId = new EntityId(entityCounter++);
-                        var entity = createEntity(i, j);
+                        var entityId = new EntityId(entityCounter++);                        
+                        var neighbours = getNeighbours(entityId);
+                        var entity = createEntity(j, i, neighbours);
                         var error = snapshotOutput.WriteEntity(entityId, entity);
                         if (error.HasValue)
                         {
@@ -62,7 +62,36 @@ namespace Life
             }
         }
 
-        private static Entity createEntity(int x_position, int z_position)
+        private static Improbable.Collections.List<EntityId> getNeighbours(EntityId id)
+        {
+            var neighbours = new Improbable.Collections.List<EntityId>();
+            // grid is a square with IDs like this for 5x5 grid:
+            // 21, 22, 23, 24, 25
+            // 16, 17, 18, 19, 20
+            // 11, 12, 13, 14, 15
+            // 6, 7, 8, 9, 10
+            // 1, 2, 3, 4, 5
+            var rowIndex = (id.Id - 1) / gridSize; // zero-based row index
+            var colIndex = (id.Id - 1) % gridSize; //  zero-based column index
+
+            var existsLeft = (colIndex > 0);
+            var existsRight = (colIndex < gridSize - 1);
+            var existsUp = (rowIndex < gridSize - 1);
+            var existsDown = (rowIndex > 0);
+
+            if (existsLeft) {neighbours.Add(new EntityId(id.Id-1));} // left
+            if (existsLeft && existsUp) {neighbours.Add(new EntityId(id.Id-1+gridSize));} // left, up
+            if (existsLeft && existsDown) {neighbours.Add(new EntityId(id.Id-1-gridSize));} // left, down
+            if (existsUp) {neighbours.Add(new EntityId(id.Id+gridSize));} // up
+            if (existsDown) {neighbours.Add(new EntityId(id.Id-gridSize));} // down
+            if (existsRight) {neighbours.Add(new EntityId(id.Id+1));} // right
+            if (existsRight && existsUp) {neighbours.Add(new EntityId(id.Id+1+gridSize));} // right, up
+            if (existsRight && existsDown) {neighbours.Add(new EntityId(id.Id+1-gridSize));} // right, down
+
+            return neighbours;
+        }
+
+        private static Entity createEntity(int x_position, int z_position, Improbable.Collections.List<EntityId> neighbours)
         {
             var entity = new Entity();
             const string entityType = "CellularAutomata";
@@ -95,7 +124,7 @@ namespace Life
             entity.Add(new Persistence.Data());
             entity.Add(new Metadata.Data(entityType));
             entity.Add(new Position.Data(new Coordinates(x_position, 0, z_position)));
-            entity.Add(new Cell.CellState.Data(false));
+            entity.Add(new Cell.CellState.Data(new Cell.CellStateData(false, neighbours)));
             return entity;
         }
 
