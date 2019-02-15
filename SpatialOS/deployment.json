@@ -1,3 +1,21 @@
 {
-  "template": "small_entity_db_v2"
+  "template": "small",
+  "dimensionsInWorldUnits": {
+    "x": 200,
+    "z": 200
+  },
+  "loadBalancing": {
+    "layerConfigurations": [
+      {
+        "layer": "lifeSimulation",
+        "entity_id_sharding": {
+          "numWorkers": 2
+        }
+      }
+    ]
+  },
+  "snapshot": {
+    "takeSnapshotIntervalSeconds": "600",
+    "startDeploymentFromSnapshotFile": "./snapshots/100x100.snapshot"
+  }
 }

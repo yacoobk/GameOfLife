@@ -13,7 +13,6 @@ namespace Cell
         private const int ErrorExitStatus = 1;
         private const uint GetOpListTimeoutInMilliseconds = 100;
         const int FramesPerSecond = 1;
-        const int gridSize = 10; // yolo hack for now
 
         static int Main(string[] arguments)
         {
@@ -67,15 +66,10 @@ namespace Cell
                     var stopwatch = new System.Diagnostics.Stopwatch();
                     var cells = new Dictionary<Improbable.EntityId, CellState.Data>();
                     var cellsAuthoritative = new HashSet<Improbable.EntityId>();
-                    var isViewComplete = false;
-                    var isSeeded = false;
+                    var cellsToUpdate = new Dictionary<Improbable.EntityId, CellState.Update>();
 
                     // parse cells in to a useful data structure
-                    dispatcher.OnAddComponent<Cell.CellState>(op => 
-                    {
-                        //cells.Add(op.EntityId, op.Data.Get().Value);
-                        cells.Add(op.EntityId, op.Data.Get());
-                    });
+                    dispatcher.OnAddComponent<Cell.CellState>(op => cells.Add(op.EntityId, op.Data.Get()));
 
                     // TODO: only strictly care about this for cells we are not authoritative over
                     // for ones we are authoritative over, we should maintain our own state
@@ -99,8 +93,7 @@ namespace Cell
                         }
                     });
 
-                    // simulate the world
-                    var tick = 0;
+                    // Try to simulate the world
                     while (isConnected)
                     {
                         stopwatch.Reset();
@@ -112,81 +105,67 @@ namespace Cell
                         }
                         // Do other work here...
 
-                        connection.SendLogMessage(LogLevel.Info, LoggerName, $"entity count {cells.Count}");
+                        connection.SendLogMessage(LogLevel.Info, LoggerName, $"entity count {cells.Count}, authority count {cellsAuthoritative.Count}");
 
-                        // Check if the view is complete
-                        // yolo - I know there are only gridSize*gridSize entities in the snapshot, and only 1 worker
-                        if (!isViewComplete && cells.Count == (int)Math.Pow(gridSize,2) && cellsAuthoritative.Count == cells.Count)
+                        // Check if we can calculate the next generation, if not skip iteration
+                        // - if know about all neighbours and their generations are the same as or 1 above authoritative cells
+                        int foundAuthoritativeCellsAndAllNeighbours = 0;
+                        uint maxAuthoritativeCellGen = 0;
+                        uint maxNeighbourCellGen = 0;
+                        cellsToUpdate.Clear();
+                        
+                        foreach(var cellId in cellsAuthoritative)
                         {
-                            connection.SendLogMessage(LogLevel.Info, LoggerName, "view completed");
-                            isViewComplete = true;
-                        }
-
-                        // Seed the game
-                        if (isViewComplete && !isSeeded)
-                        {
-                            connection.SendLogMessage(LogLevel.Info, LoggerName, "seeding...");
-                            var update = new Cell.CellState.Update();
-                            update.isAlive = true;
-                            connection.SendComponentUpdate(new EntityId(12), update);
-                            connection.SendComponentUpdate(new EntityId(13), update);
-                            connection.SendComponentUpdate(new EntityId(14), update);
-                            isSeeded = true;
-                        }
-
-                        // compute a game tick
-                        // Every cell interacts with its eight neighbours, which are the cells that are horizontally, vertically, or diagonally adjacent.
-                        // At each step in time, the following transitions occur:
-                        // 1. Any live cell with fewer than two live neighbors dies, as if by underpopulation.
-                        // 2. Any live cell with two or three live neighbors lives on to the next generation.
-                        // 3. Any live cell with more than three live neighbors dies, as if by overpopulation.
-                        // 4. Any dead cell with exactly three live neighbors becomes a live cell, as if by reproduction.
-                        if (isViewComplete && isSeeded)
-                        {
-                            tick++;
-                            connection.SendLogMessage(LogLevel.Info, LoggerName, $"** Tick {tick} **");
-                            foreach(var cellId in cellsAuthoritative)
+                            CellState.Data cellData;
+                            var foundCell = cells.TryGetValue(cellId, out cellData);
+                            if (!foundCell)
                             {
-                                CellState.Data cellData;
-                                var foundCell = cells.TryGetValue(cellId, out cellData);
-                                if (!foundCell)
+                                connection.SendLogMessage(LogLevel.Error, LoggerName, $"Could not find cell {cellId.Id}");
+                                break;
+                            }
+
+                            // do we have all neighbours & if so calculate their max generation
+                            int foundNeighbours = 0;
+                            int liveNeighbours = 0;
+                            foreach (var neighbourId in cellData.Value.neighbours)
+                            {
+                                CellState.Data neighbourCellData;
+                                var foundNeighbour = cells.TryGetValue(neighbourId, out neighbourCellData);
+                                if (foundNeighbour)
                                 {
-                                    connection.SendLogMessage(LogLevel.Error, LoggerName, $"Could not find cell {cellId.Id}");
+                                    foundNeighbours++;
+                                    maxNeighbourCellGen = Math.Max(maxNeighbourCellGen, neighbourCellData.Value.generation);
+                                    if ( (cellData.Value.generation % 2 == 0 && neighbourCellData.Value.isAliveEven)
+                                        || (cellData.Value.generation % 2 == 1 && neighbourCellData.Value.isAliveOdd))
+                                    {
+                                        liveNeighbours++;
+                                    }
+                                }
+                                else
+                                {
+                                    connection.SendLogMessage(LogLevel.Warn, LoggerName, $"Could not find cell {cellId}'s neighbour {neighbourId.Id}");
                                     break;
                                 }
-
-                                // count how many neighbours are alive
-                                var liveNeighbours = 0;
-                                foreach (var neighbourId in cellData.Value.neighbours)
-                                {
-                                    CellState.Data neighbourCellData;
-                                    var foundNeighbour = cells.TryGetValue(neighbourId, out neighbourCellData);
-                                    if (!foundNeighbour)
-                                    {
-                                        connection.SendLogMessage(LogLevel.Error, LoggerName, $"Could not find cell {cellId.Id}'s neighbour {neighbourId.Id}");
-                                        break;
-                                    }
-                                    if (neighbourCellData.Value.isAlive) { liveNeighbours++; }
-                                }
-
-                                // if state needs to change then send an update
-                                // connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {cellId.Id} {cellData.isAlive}. live neighbours: {liveNeighbours}");
-                                var update = new Cell.CellState.Update();
-                                if (cellData.Value.isAlive && (liveNeighbours < 2 || liveNeighbours > 3))
-                                {
-                                    // connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {cellId.Id} {cellData.isAlive}. live neighbours: {liveNeighbours}. Killing...");
-                                    //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Killing...");
-                                    update.isAlive = false;
-                                    connection.SendComponentUpdate(cellId, update);
-                                }
-                                if (!cellData.Value.isAlive && liveNeighbours == 3)
-                                {
-                                    // connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {cellId.Id} {cellData.isAlive}. live neighbours: {liveNeighbours}. Spawning...");
-                                    //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Spawning...");
-                                    update.isAlive = true;
-                                    connection.SendComponentUpdate(cellId, update);
-                                }
                             }
+
+                            if(foundNeighbours != cellData.Value.neighbours.Count) { break; } // don't have all the neighbours
+
+                            foundAuthoritativeCellsAndAllNeighbours++;
+                            maxAuthoritativeCellGen = Math.Max(maxAuthoritativeCellGen, cellData.Value.generation);
+
+                            // also optimistically calculate the next gen for this authoritative cell since we have the data available
+                            var currentCellIsAlive = (cellData.Value.generation % 2 == 0) ? cellData.Value.isAliveEven : cellData.Value.isAliveOdd;
+                            var newCellIsAlive = calculateNextCellState(currentCellIsAlive, liveNeighbours);
+                            var update = new Cell.CellState.Update();
+                            update.generation = cellData.Value.generation + 1;
+                            if (cellData.Value.generation % 2 == 0) {update.isAliveOdd = newCellIsAlive;} else {update.isAliveEven = newCellIsAlive;}
+                            cellsToUpdate.Add(cellId, update);
+                        }
+
+                        if(foundAuthoritativeCellsAndAllNeighbours == cellsAuthoritative.Count && ((maxAuthoritativeCellGen == maxNeighbourCellGen) || (maxAuthoritativeCellGen == maxNeighbourCellGen-1)))
+                        {
+                            connection.SendLogMessage(LogLevel.Info, LoggerName, $"** Tick {maxAuthoritativeCellGen + 1} **");
+                            updateCells(connection, cellsToUpdate);
                         }
 
                         // Finished doing work...
@@ -199,6 +178,27 @@ namespace Cell
             }
 
             return 0;
+        }
+
+        // Every cell interacts with its eight neighbours, which are the cells that are horizontally, vertically, or diagonally adjacent.
+        // At each step in time, the following transitions occur:
+        // 1. Any live cell with fewer than two live neighbors dies, as if by underpopulation.
+        // 2. Any live cell with two or three live neighbors lives on to the next generation.
+        // 3. Any live cell with more than three live neighbors dies, as if by overpopulation.
+        // 4. Any dead cell with exactly three live neighbors becomes a live cell, as if by reproduction.
+        private static bool calculateNextCellState(bool cellIsAlive, int liveNeighbours)
+        {
+            return (cellIsAlive && (liveNeighbours == 2 || liveNeighbours == 3)) || (!cellIsAlive && liveNeighbours == 3);
+        }
+
+        // Send State Updates
+        private static void updateCells(Connection connection, Dictionary<Improbable.EntityId, CellState.Update> cellsToUpdate)
+        {
+            foreach(var cell in cellsToUpdate)
+            {
+                //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {cell.Key} {cell.Value}. update: {cell.Value.generation} {cell.Value.isAliveEven} {cell.Value.isAliveOdd}");
+                connection.SendComponentUpdate(cell.Key, cell.Value);
+            }
         }
 
         private static Connection ConnectWorker(string[] arguments)

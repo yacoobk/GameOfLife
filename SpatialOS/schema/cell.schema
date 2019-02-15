@@ -3,6 +3,8 @@ package cell;
 
 component CellState {
   id = 200;
-  bool is_alive = 1; // true if the cell is alive, otherwise false
-  list<EntityId> neighbours = 2;
+  list<EntityId> neighbours = 1; // defines the topology of space
+  uint32 generation = 2; // the generation of the life simulation
+  bool is_alive_even = 3; //  current value if generation is even, otherwise previous value
+  bool is_alive_odd = 4; // current value if generation is odd, otherwise previous value
 }

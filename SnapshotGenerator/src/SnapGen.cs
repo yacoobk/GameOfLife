@@ -12,7 +12,7 @@ namespace Life
     class SnapGen
     {
         private const int ErrorExitStatus = 1;
-        private const int gridSize = 10;
+        private const int gridSize = 100;
 
         static int Main(string[] arguments)
         {
@@ -44,6 +44,7 @@ namespace Life
             using (var snapshotOutput = new SnapshotOutputStream(snapshotPath))
             {
                 var entityCounter = 1;
+                var rnd = new Random();
 
                 for (var i = 0; i < gridSize; i++)
                 {
@@ -51,7 +52,7 @@ namespace Life
                     {
                         var entityId = new EntityId(entityCounter++);                        
                         var neighbours = getNeighbours(entityId);
-                        var entity = createEntity(j, i, neighbours);
+                        var entity = createEntity(j, i, neighbours, rnd);
                         var error = snapshotOutput.WriteEntity(entityId, entity);
                         if (error.HasValue)
                         {
@@ -91,7 +92,7 @@ namespace Life
             return neighbours;
         }
 
-        private static Entity createEntity(int x_position, int z_position, Improbable.Collections.List<EntityId> neighbours)
+        private static Entity createEntity(int x_position, int z_position, Improbable.Collections.List<EntityId> neighbours, Random rnd)
         {
             var entity = new Entity();
             const string entityType = "CellularAutomata";
@@ -124,7 +125,8 @@ namespace Life
             entity.Add(new Persistence.Data());
             entity.Add(new Metadata.Data(entityType));
             entity.Add(new Position.Data(new Coordinates(x_position, 0, z_position)));
-            entity.Add(new Cell.CellState.Data(new Cell.CellStateData(false, neighbours)));
+            var start_state = (rnd.NextDouble() > 0.5);
+            entity.Add(new Cell.CellState.Data(new Cell.CellStateData(neighbours, 0, start_state, false)));
             return entity;
         }
 
