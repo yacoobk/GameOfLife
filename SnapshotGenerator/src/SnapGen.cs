@@ -117,7 +117,8 @@ namespace Life
             {
                 {EntityAcl.ComponentId, workerWriteRequirementSet},
                 {Position.ComponentId, workerWriteRequirementSet},
-                {Cell.CellState.ComponentId, workerWriteRequirementSet}
+                {Cell.CellState.ComponentId, workerWriteRequirementSet},
+                {Metadata.ComponentId, workerWriteRequirementSet}
             };
 
             entity.Add(new EntityAcl.Data(readRequirementSet, writeAcl));

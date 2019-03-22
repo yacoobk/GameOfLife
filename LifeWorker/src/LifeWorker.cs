@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Linq;
 using Improbable;
 using Improbable.Worker;
 
@@ -66,7 +67,7 @@ namespace Cell
                     var stopwatch = new System.Diagnostics.Stopwatch();
                     var cells = new Dictionary<Improbable.EntityId, CellState.Data>();
                     var cellsAuthoritative = new HashSet<Improbable.EntityId>();
-                    var cellsToUpdate = new Dictionary<Improbable.EntityId, CellState.Update>();
+                    var cellsToUpdate = new List<KeyValuePair<Improbable.EntityId, CellEntityUpdates>>();
 
                     // parse cells in to a useful data structure
                     dispatcher.OnAddComponent<Cell.CellState>(op => cells.Add(op.EntityId, op.Data.Get()));
@@ -110,7 +111,9 @@ namespace Cell
                         // Check if we can calculate the next generation, if not skip iteration
                         // - if know about all neighbours and their generations are the same as or 1 above authoritative cells
                         int foundAuthoritativeCellsAndAllNeighbours = 0;
+                        uint minAuthoritativeCellGen = uint.MaxValue;
                         uint maxAuthoritativeCellGen = 0;
+                        uint minNeighbourCellGen = uint.MaxValue;
                         uint maxNeighbourCellGen = 0;
                         cellsToUpdate.Clear();
                         
@@ -123,10 +126,13 @@ namespace Cell
                                 connection.SendLogMessage(LogLevel.Error, LoggerName, $"Could not find cell {cellId.Id}");
                                 break;
                             }
+                            minAuthoritativeCellGen = Math.Min(minAuthoritativeCellGen, cellData.Value.generation);
+                            maxAuthoritativeCellGen = Math.Max(maxAuthoritativeCellGen, cellData.Value.generation);
 
-                            // do we have all neighbours & if so calculate their max generation
+                            // do we have all neighbours & if so calculate their min & max generation
                             int foundNeighbours = 0;
                             int liveNeighbours = 0;
+                            bool canCalcNextGen = true;
                             foreach (var neighbourId in cellData.Value.neighbours)
                             {
                                 CellState.Data neighbourCellData;
@@ -134,8 +140,13 @@ namespace Cell
                                 if (foundNeighbour)
                                 {
                                     foundNeighbours++;
+                                    minNeighbourCellGen = Math.Min(minNeighbourCellGen, neighbourCellData.Value.generation);
                                     maxNeighbourCellGen = Math.Max(maxNeighbourCellGen, neighbourCellData.Value.generation);
-                                    if ( (cellData.Value.generation % 2 == 0 && neighbourCellData.Value.isAliveEven)
+                                    if (!(cellData.Value.generation == neighbourCellData.Value.generation || cellData.Value.generation == neighbourCellData.Value.generation-1))
+                                    {
+                                        canCalcNextGen = false;
+                                    }
+                                    else if ( (cellData.Value.generation % 2 == 0 && neighbourCellData.Value.isAliveEven)
                                         || (cellData.Value.generation % 2 == 1 && neighbourCellData.Value.isAliveOdd))
                                     {
                                         liveNeighbours++;
@@ -151,21 +162,27 @@ namespace Cell
                             if(foundNeighbours != cellData.Value.neighbours.Count) { break; } // don't have all the neighbours
 
                             foundAuthoritativeCellsAndAllNeighbours++;
-                            maxAuthoritativeCellGen = Math.Max(maxAuthoritativeCellGen, cellData.Value.generation);
 
-                            // also optimistically calculate the next gen for this authoritative cell since we have the data available
+                            if (!canCalcNextGen) continue;
+
+                            // optimistically calculate the next gen for this authoritative cell since we have the data available
                             var currentCellIsAlive = (cellData.Value.generation % 2 == 0) ? cellData.Value.isAliveEven : cellData.Value.isAliveOdd;
                             var newCellIsAlive = calculateNextCellState(currentCellIsAlive, liveNeighbours);
                             var update = new Cell.CellState.Update();
+                            var metaUpdate = new Improbable.Metadata.Update();
                             update.generation = cellData.Value.generation + 1;
                             if (cellData.Value.generation % 2 == 0) {update.isAliveOdd = newCellIsAlive;} else {update.isAliveEven = newCellIsAlive;}
-                            cellsToUpdate.Add(cellId, update);
+                            metaUpdate.entityType = newCellIsAlive ? "alive" : "dead";
+                            cellsToUpdate.Add(new KeyValuePair<EntityId, CellEntityUpdates>(cellId, new CellEntityUpdates(update, metaUpdate)));
                         }
 
-                        if(foundAuthoritativeCellsAndAllNeighbours == cellsAuthoritative.Count && ((maxAuthoritativeCellGen == maxNeighbourCellGen) || (maxAuthoritativeCellGen == maxNeighbourCellGen-1)))
+                        // connection.SendLogMessage(LogLevel.Warn, LoggerName, $"foundAuthoritativeCellsAndAllNeighbours {foundAuthoritativeCellsAndAllNeighbours}, cellsToUpdate.Count {cellsToUpdate.Count}, minAuthoritativeCellGen {minAuthoritativeCellGen}, maxAuthoritativeCellGen {maxAuthoritativeCellGen}, minNeighbourCellGen {minNeighbourCellGen}, maxNeighbourCellGen {maxNeighbourCellGen}");
+                        if(cellsToUpdate.Count > 0
+                          && foundAuthoritativeCellsAndAllNeighbours == cellsAuthoritative.Count
+                          && minAuthoritativeCellGen <= minNeighbourCellGen // prevents getting too far ahead vs other workers
+                        )
                         {
-                            connection.SendLogMessage(LogLevel.Info, LoggerName, $"** Tick {maxAuthoritativeCellGen + 1} **");
-                            updateCells(connection, cellsToUpdate);
+                            updateCells(connection, cellsToUpdate, minAuthoritativeCellGen, maxAuthoritativeCellGen);
                         }
 
                         // Finished doing work...
@@ -192,13 +209,28 @@ namespace Cell
         }
 
         // Send State Updates
-        private static void updateCells(Connection connection, Dictionary<Improbable.EntityId, CellState.Update> cellsToUpdate)
+        private static void updateCells(Connection connection, List<KeyValuePair<Improbable.EntityId, CellEntityUpdates>> cellsToUpdate, uint minAuthoritativeCellGen, uint maxAuthoritativeCellGen)
         {
-            foreach(var cell in cellsToUpdate)
+            // if we have a mix of authoritative generations then only apply updates for the lower generation
+            if(minAuthoritativeCellGen == maxAuthoritativeCellGen)
             {
-                //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {cell.Key} {cell.Value}. update: {cell.Value.generation} {cell.Value.isAliveEven} {cell.Value.isAliveOdd}");
-                connection.SendComponentUpdate(cell.Key, cell.Value);
+                connection.SendLogMessage(LogLevel.Info, LoggerName, $"** Tick {maxAuthoritativeCellGen + 1} **");
+                cellsToUpdate.ForEach(cell => updateCell(connection, cell));
             }
+            else
+            {
+                // filter to the cells which are going to be updated 1 gen above the current minAuthoritativeCellGen (i.e. the cells which currently are minAuthoritativeCellGen)
+                var lowerGenCells = cellsToUpdate.Where(cell => cell.Value.cellStateUpdate.generation.Value == minAuthoritativeCellGen + 1);
+                connection.SendLogMessage(LogLevel.Info, LoggerName, $"** Tick {minAuthoritativeCellGen + 1} (partial {lowerGenCells.Count()} cells)  **");
+                lowerGenCells.ToList().ForEach(cell => updateCell(connection, cell));
+            }
+        }
+
+        private static void updateCell(Connection connection, KeyValuePair<EntityId, CellEntityUpdates> cell)
+        {
+            //connection.SendLogMessage(LogLevel.Info, LoggerName, $"Cell {cell.Key} {cell.Value}. update: {cell.Value.cellStateUpdate.generation.Value} {cell.Value.cellStateUpdate.isAliveEven.Value} {cell.Value.cellStateUpdate.isAliveOdd.Value}");
+            connection.SendComponentUpdate(cell.Key, cell.Value.cellStateUpdate);
+            connection.SendComponentUpdate(cell.Key, cell.Value.metaUpdate);
         }
 
         private static Connection ConnectWorker(string[] arguments)
@@ -209,12 +241,25 @@ namespace Cell
             var connectionParameters = new ConnectionParameters();
             connectionParameters.WorkerType = WorkerType;
             connectionParameters.Network.ConnectionType = NetworkConnectionType.Tcp;
+            connectionParameters.ProtocolLogging.LogPrefix = $"C:\\Code\\SpatialProjects\\GameOfLife\\SpatialOS\\logs\\protocol\\{workerId}-log-";
+            connectionParameters.EnableProtocolLoggingAtStartup = true;
 
             using (var future = Connection.ConnectAsync(hostname, port, workerId, connectionParameters))
             {
                 return future.Get();
             }
         }
-                
+
+
+        private class CellEntityUpdates
+        {
+            public CellState.Update cellStateUpdate;
+            public Improbable.Metadata.Update metaUpdate;
+            public CellEntityUpdates(CellState.Update update, Improbable.Metadata.Update meta_uptate)
+            {
+                cellStateUpdate = update;
+                metaUpdate = meta_uptate;
+            }
+        }
     }
 }
